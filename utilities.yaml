@@ -1,0 +1,385 @@
+esphome:
+  name: utilities3
+  friendly_name: utilities3
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: arduino
+    
+# Enable logging
+logger:
+   level: INFO
+ 
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  manual_ip:
+    static_ip: 192.168.1.171
+    gateway: 192.168.1.254
+    subnet: 255.255.255.0    
+    dns1: 192.168.1.1
+# Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: !secret ap_ssid
+    password: !secret ap_password
+
+captive_portal:
+
+web_server:
+  port: 80
+ota:
+  - platform: !secret ota_platform
+    password: !secret ota_password
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+  reboot_timeout: 30min
+  # services:
+  #   - service: set_pulse_total
+  #     variables:
+  #       new_pulse_total: int
+  #     then:
+  #       - pulse_counter.set_total_pulses:
+  #           id: water_sensor_freq
+  #           value: !lambda 'return new_pulse_total;'
+# status_led:
+#   pin:
+#     number: GPIO02
+#     inverted: true
+time:
+  - platform: sntp
+    id: sntp_time
+i2c:
+  sda: GPIO21
+  scl: GPIO20
+  scan: true
+  # id: bus_a
+  frequency: 300kHz
+
+# Display configuration (SSD1306 128x64 OLED)
+display:
+  - platform: ssd1306_i2c
+    model: "SH1106 128x32"
+    address: 0x3C
+    id: my_display
+    update_interval: 0.5s
+
+    # - light.turn_on:
+    # id: co2_status_led
+    # brightness: 100%
+    # red:   1
+    # green: 0
+    # blue:  0
+    # flash_length: 500ms
+
+    lambda: |-
+      it.set_rotation(id(rotation));
+      it.clear();
+      it.printf(1, 1, id(fontPPT), "Menu: %s", 
+        id(menu_level) == id(mnuOverview) ? "Overzicht" : 
+        id(menu_level) == id(mnuElectra) ? "Electra" : 
+        id(menu_level) == id(mnuGas) ? "Gas" :                             
+        id(menu_level) == id(mnuWater) ? "Water" : "Status");
+      
+      // Content for each menu level
+      if (id(menu_level) == id(mnuOverview)) {
+        it.printf(1, 12, id(fontBody), "Today: %.2f kWh, Month: %.2f kWh", id(energy_today).state, id(energy_month).state);
+        it.printf(1, 23, id(fontBody), "Water: %.2f kWh", id(grid_power).state);
+        it.printf(1, 35, id(fontBody), "Gas: %.2f W", id(grid_power).state);   
+        } 
+          else if (id(menu_level) == id(mnuElectra)) {
+        it.printf(1, 12, id(fontBody), "Today: %.2f kWh", id(energy_today).state);
+        it.printf(1, 23, id(fontBody), "Month: %.2f kWh", id(energy_month).state);
+        it.printf(1, 35, id(fontBody), "Grid: %.2f W", id(grid_power).state); 
+        } 
+          else if (id(menu_level) == id(mnuGas)) {
+        } 
+          else if (id(menu_level) == id(mnuStatus)) {        
+        it.printf(1, 12, id(fontBody), "WiFi: %.0f dBm", 22.0);
+            it.printf(1, 23, id(fontBody), "Uptime: %s ", id(myUptime));
+        it.printf(1, 34, id(fontBody), "ESPHome versie: %.0f ", id(ESPHomeVersion).state);        
+        } 
+          else {
+        it.printf(1, 11, id(fontBody), "Button: %s", id(display_button).state ? "Pressed" : "Released");        
+        }
+# Button configuration
+binary_sensor:
+  - platform: gpio
+    pin: 
+      number: GPIO04
+      mode: INPUT_PULLUP
+      inverted: true
+    name: "Display Button"
+    id: display_button
+    on_press:
+      - logger.log:
+          level: INFO
+          format: 'menu_level: %d, oled_on: %s '
+          args: ['menu_level', 'id(oled_on) ? "ON" : "OFF"']
+      - lambda: |-
+          if (id(oled_on)==true){// als oled aan is dan pas door het menu stappen 
+            id(menu_level) = (id(menu_level) % 5) + 1; // Cycle through 1, 2, 3 .....
+          }
+          id(my_display).update(); // Force display update, anders alleen display aanzetten
+          id(WS2812Func)->execute(id(menu_level));
+      - script.execute: reset_oled_timeout  #start de displaytijd opnieuw
+    on_double_click: 
+      - logger.log: 
+          level: DEBUG
+          format: "voor: double_click"
+      - lambda: |-
+          switch (id(rotation)) {
+              case DISPLAY_ROTATION_0_DEGREES: 
+                id(rotation) = DISPLAY_ROTATION_180_DEGREES;
+                break;
+              case DISPLAY_ROTATION_180_DEGREES: 
+                id(rotation) = DISPLAY_ROTATION_0_DEGREES;
+                break;            
+              default:
+               id(rotation) = DISPLAY_ROTATION_0_DEGREES;
+          }
+      - logger.log: 
+          level: DEBUG
+          format: "na: double_click"  
+      - component.update: my_display
+    # filters:
+    #    - delayed_on: 30ms
+    #    - delayed_off: 30ms
+script:
+  - id: WS2812Func
+    mode: restart  
+    parameters: 
+      menuLev: int
+    then:
+      - lambda: |-
+          auto call = id(WS2812).turn_on();
+            call.set_color_mode(ColorMode::RGB);
+            call.set_brightness(1.0); 
+            if (menuLev == 0.0){//flash
+              call.set_flash_length(250);
+              call.set_rgb(1.0, 1.0, 1.0);
+               }else   {//menu
+              call.set_transition_length(10); // in ms                         
+              call.set_rgb(id(rgb)[id(menu_level)][0],id(rgb)[id(menu_level)][1], id(rgb)[id(menu_level)][2]);
+              }                            
+          call.perform();             
+      - logger.log:
+          level: INFO
+          format: 'menu: %d, oled_on: %s '
+          args: ['menuLev', 'id(oled_on) ? "ON" : "OFF"'       ]
+  - id: reset_oled_timeout
+    mode: restart  
+    then:
+      - light.turn_on: displayBL #synchronize the button in HA      
+      - lambda: |- 
+          id(oled_on) = true;
+          id(my_display).turn_on();
+      - script.stop: oled_timeout
+      - script.execute: oled_timeout
+  - id: oled_timeout
+    mode: restart
+    then:
+      - delay: 3.0s
+      - light.turn_off: displayBL #synchronize the button in HA      
+      - logger.log: 
+          level: INFO
+          format: "voor: restart oled_timeout: %s"
+          args: [ 'id(oled_on) ? "ON" : "OFF"' ]      
+      - lambda: |-
+         id(oled_on) = false;
+         id(my_display).turn_off();
+         //ws2812 moet nog uit
+         auto call = id(WS2812).turn_on();
+          call.set_brightness(0); 
+         call.perform(); 
+      - logger.log: 
+          level: INFO
+          format: "na: restart oled_timeout: %s"
+          args: [ 'id(oled_on) ? "ON" : "OFF"' ]
+globals:
+  - id: oled_on
+    type: bool
+    restore_value: no
+    initial_value: 'true'
+  - id: menu_level
+    type: int
+    restore_value: no
+    initial_value: '1' # Start at Status menu      
+  - id: rgb
+    type:  float[6][3]
+    initial_value: '{{{1.0, 0.0, 0.0},
+                      {0.0, 1.0, 0.0}, 
+                      {0.0, 0.0, 1.0}, 
+                      {0.0, 0.0, 1.0}, 
+                      {0.0, 0.0, 1.0}, 
+                      {1.0, 1.0, 1.0}}}'
+  - id: rotation
+    restore_value: yes
+    type: esphome::display::DisplayRotation
+    initial_value: 'DISPLAY_ROTATION_0_DEGREES'
+  - id: mnuOverview
+    type: int
+    restore_value: no
+    initial_value: '1' # 
+  - id: mnuElectra
+    type: int
+    restore_value: no
+    initial_value: '2' # 
+  - id: mnuGas
+    type: int
+    restore_value: no
+    initial_value: '3' # 
+  - id: mnuWater
+    type: int
+    restore_value: no
+    initial_value: '4' # 
+  - id: mnuStatus
+    type: int
+    restore_value: no
+    initial_value: '5' #     
+interval:
+  - interval: 1s
+    then:
+      - if:
+          condition:
+            - not:
+                - script.is_running: oled_timeout
+          then:
+            - script.execute: oled_timeout
+
+light:
+  - platform: monochromatic
+    name: displayBL
+    id: displayBL
+    output: my_display1
+ #   restore_mode: ALWAYS_ON
+    initial_state:
+      state: true      
+    on_turn_on:
+      - logger.log: 
+          level: INFO
+          format: "Display On begin: %d"
+          args: [ 'id(oled_on)' ]
+      - script.execute: reset_oled_timeout          
+    on_turn_off:
+      then:
+      - logger.log:
+          level: INFO        
+          format: "Display Off: %d"
+          args: [ 'id(oled_on)' ]
+      - lambda: |-
+          if (id(oled_on) == true) {
+           id(my_display).turn_off();     
+           id(oled_on) = false;
+          }   
+  ###WS2812
+  - platform: neopixelbus
+    type: GRB
+    variant: WS2812
+    pin: GPIO10
+    num_leds: 1 
+    name: "NeoPixel Light"      
+    id: WS2812    
+
+sensor:
+  # Timeout after 1 minute, for a minimum resolution of 1.0 litres per minute.
+  # Default is 5 minutes, meaning 1 pulse per 5 minutes, which is 0.2 litres per minute.
+  - platform: pulse_meter
+    pin: 
+      number: GPIO07      
+      mode: INPUT_PULLUP
+      inverted: false
+    name: "Water Instantaneous Consumption"
+    id: water_inst_cons
+    unit_of_measurement: "litre/min"
+    accuracy_decimals: 1
+    timeout: 1min
+    icon: "mdi:water-pump"
+    total:
+      name: "Water Consumed"
+      id: water_consumed
+      unit_of_measurement: "litre"
+      accuracy_decimals: 0
+      device_class: water
+      state_class: total_increasing
+      icon: "mdi:water"
+    filters:
+      - lambda: |-
+            id(WS2812Func)->execute(0.0);
+            return x;
+  - platform: copy
+    source_id: water_consumed
+    name: ${friendly_name}"Water Meter Reading"
+    id: water_meter_reading
+    unit_of_measurement: "m³"
+    accuracy_decimals: 2
+    device_class: water
+    state_class: total_increasing
+    icon: "mdi:water"
+    filters:
+  #      lambda: |-
+    #   - multiply: 0.001
+
+  - platform: copy
+    source_id: water_consumed
+    name: ${friendly_name}"Water Meter Total"
+    id: water_meter_total
+    unit_of_measurement: "m³"
+    accuracy_decimals: 3
+    device_class: water
+    state_class: total_increasing
+    icon: "mdi:water"
+    # filters:
+    #   - multiply: 0.001
+  - platform: homeassistant
+    id: energy_today
+    entity_id: sensor.electricity_meter_energieverbruik  # Replace with your actual entity ID
+    unit_of_measurement: "kWh"
+  - platform: homeassistant
+    id: energy_month
+    entity_id: sensor.energy_consumption_monthly  # Replace with your actual entity ID
+    unit_of_measurement: "kWh"
+  - platform: homeassistant
+    id: grid_power
+    entity_id: sensor.grid_power_usage  # Replace with your actual entity ID
+    unit_of_measurement: "W"
+output:
+  - platform: template
+    id: my_display1
+    type: float
+    write_action:
+      then:
+      - lambda: id(my_display).set_contrast(state);    
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: "IP Address"
+    ssid:
+      name: "WiFi SSID"
+    bssid:
+      name: "WiFi BSSID"
+
+  - platform: version
+    id: ESPHomeVersion
+    name: "ESPHome Version"
+    hide_timestamp: false
+  - platform: uptime
+    id: myUptime
+    name: Uptime
+    format:
+      separator: " "
+      #days: "D"    
+      expand: true
+
+    # Font for display
+font:
+  - file: "fonts/Helvetica.ttf"  # You'll need to upload this font file
+    id: fontPPT
+    size: 10  
+  - file: "fonts/Helvetica.ttf"  # You'll need to upload this font file
+    id: fontBody
+    size: 8    
